@@ -1,3 +1,4 @@
+﻿#include "../XorUnpack.h"
 /*
 This is the core graphics library for all our displays, providing a common
 set of graphics primitives (points, lines, circles, etc.).  It needs to be
@@ -99,6 +100,7 @@ inline uint8_t *pgm_read_bitmap_ptr(const GFXfont *gfxFont) {
   }
 #endif
 
+static bool packed = false;
 /**************************************************************************/
 /*!
    @brief    Instatiate a GFX context for graphics! Can only be done by a
@@ -117,6 +119,7 @@ Adafruit_GFX::Adafruit_GFX(int16_t w, int16_t h) : WIDTH(w), HEIGHT(h) {
   wrap = true;
   _cp437 = false;
   gfxFont = NULL;
+  packed = false;
 }
 
 /**************************************************************************/
@@ -1179,10 +1182,29 @@ void Adafruit_GFX::drawChar(int16_t x, int16_t y, unsigned char c,
     // drawChar() directly with 'bad' characters of font may cause mayhem!
 
     c -= (uint8_t)pgm_read_byte(&gfxFont->first);
-    GFXglyph *glyph = pgm_read_glyph_ptr(gfxFont, c);
+
+    // blocks 1,bits[blockSize] or 0 <=> bits[blockSIze] = {0}
+    uint8_t blockSize = gfxFont->bitmap[0];
+    // offset is relative to average unless:
+    // - xBitmaps[8192] limitted (8192Bytes * 8bits = 65536)
+    uint16_t averageCharSize = (8 * bitmapSize) / (gfxFont->last - gfxFont->first + 1);
+    GFXglyph *glyph = pgm_read_glyph_ptr(gfxFont, c); 
+    // bit data ends @original offset (== start of next char)
+    uint32_t bitSize = pgm_read_word(&glyph->bitmapOffset);
+    uint32_t bo;
+    if (packed) { // marked by 1st offset == 0
+        if (c) {
+            bitSize += averageCharSize * c; // calculate real (bit) offset
+            GFXglyph *prevGlyph = pgm_read_glyph_ptr(gfxFont, c - 1);
+            bo = pgm_read_word(&prevGlyph->bitmapOffset);
+            if (bo == _I16_MIN) bo = 0; // packed marker - if there is empty 1st char => start @0
+            else bo = bo + averageCharSize * (c - 1); // real start offset
+            bitSize -= bo; // encoded (stored) bits = current - previous offset
+        }
+        else bo = 0; // first char start fix (offset of next char if packed)
+    } else bo = bitSize; // standard font offset
     uint8_t *bitmap = pgm_read_bitmap_ptr(gfxFont);
 
-    uint16_t bo = pgm_read_word(&glyph->bitmapOffset);
     uint8_t w = pgm_read_byte(&glyph->width), h = pgm_read_byte(&glyph->height);
     int8_t xo = pgm_read_byte(&glyph->xOffset),
            yo = pgm_read_byte(&glyph->yOffset);
@@ -1213,9 +1235,23 @@ void Adafruit_GFX::drawChar(int16_t x, int16_t y, unsigned char c,
     // implemented this yet.
 
     startWrite();
+
+    uint8_t startOffset = bo & 7; // 1st bit position inside 1st byte
+    if (packed) bo >>= 3; // byte position of char data
+    BitStreamsReader bitStream(&bitmap[bo] + 1, startOffset, blockSize, bitSize);
+    static BitXorBuffer *rowXorBuf = NULL;
+    if (packed) {
+      if (rowXorBuf) rowXorBuf->ReAlloc(w);
+      else rowXorBuf = new BitXorBuffer(w); // row XOR buffer (each row is XORed with)
+    }
     for (yy = 0; yy < h; yy++) {
+      if (packed) rowXorBuf->rewind();
       for (xx = 0; xx < w; xx++) {
-        if (!(bit++ & 7)) {
+        if (packed) {
+            bool bit = bitStream.GetBit();
+            bits = rowXorBuf->xorMove(bit); // xor with XOR buffer
+        }
+        else if (!(bit++ & 7)) {
           bits = pgm_read_byte(&bitmap[bo++]);
         }
         if (bits & 0x80) {
@@ -1335,7 +1371,7 @@ void Adafruit_GFX::setRotation(uint8_t x) {
     @param  f  The GFXfont object, if NULL use built in 6x8 font
 */
 /**************************************************************************/
-void Adafruit_GFX::setFont(const GFXfont *f) {
+void Adafruit_GFX::setFont(const GFXfont *f, uint32_t size) {
   if (f) {          // Font struct pointer passed in?
     if (!gfxFont) { // And no current font struct?
       // Switching from classic to new font behavior.
@@ -1348,6 +1384,9 @@ void Adafruit_GFX::setFont(const GFXfont *f) {
     cursor_y -= 6;
   }
   gfxFont = (GFXfont *)f;
+  GFXglyph *glyph = pgm_read_glyph_ptr(f, 0);
+  packed = (glyph->bitmapOffset); // 1st starts @0 unless packed where there is start of 2nd
+  bitmapSize = size; // needed to increase offsets to full bit position
 }
 
 /**************************************************************************/
@@ -2517,7 +2556,11 @@ void GFXcanvas16::byteSwap(void) {
   if (buffer) {
     uint32_t i, pixels = WIDTH * HEIGHT;
     for (i = 0; i < pixels; i++)
+#ifdef WIN32
+      throw "Not implemented !";
+#else
       buffer[i] = __builtin_bswap16(buffer[i]);
+#endif
   }
 }
 

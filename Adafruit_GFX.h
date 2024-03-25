@@ -1,6 +1,11 @@
 #ifndef _ADAFRUIT_GFX_H
 #define _ADAFRUIT_GFX_H
 
+#ifdef WIN32
+#define ARDUINO 100
+#include <stdint.h>
+#endif
+
 #if ARDUINO >= 100
 #include "Arduino.h"
 #include "Print.h"
@@ -9,8 +14,10 @@
 #endif
 #include "gfxfont.h"
 
+#ifndef WIN32
 #include <Adafruit_I2CDevice.h>
 #include <Adafruit_SPIDevice.h>
+#endif
 
 /// A generic graphics superclass that can handle all sorts of drawing. At a
 /// minimum you can subclass and provide drawPixel(). At a maximum you can do a
@@ -119,7 +126,8 @@ public:
                      int16_t *y1, uint16_t *w, uint16_t *h);
   void setTextSize(uint8_t s);
   void setTextSize(uint8_t sx, uint8_t sy);
-  void setFont(const GFXfont *f = NULL);
+#define SetFont(a,b) a.setFont(&b, sizeof(b##Bitmaps))
+  void setFont(const GFXfont *f = NULL, uint32_t size = 0);
 
   /**********************************************************************/
   /*!
@@ -246,6 +254,7 @@ protected:
   bool wrap;            ///< If set, 'wrap' text at right edge of display
   bool _cp437;          ///< If set, use correct CP437 charset (default is off)
   GFXfont *gfxFont;     ///< Pointer to special font
+  uint32_t bitmapSize;
 };
 
 /// A simple drawn button UI element
